@@ -70,6 +70,10 @@ input,select{width:100%;padding:12px 14px;border:1px solid var(--line);border-ra
 .item .go{padding:10px 18px;border:0;border-radius:999px;background:var(--blue);color:#FFFFFF;font-weight:700;white-space:nowrap}
 .item .go:disabled{background:var(--line);color:var(--muted);cursor:default}
 .item.done{background:var(--soft)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chips button{flex:1 1 0;min-width:60px;padding:10px 0;border:1.5px solid var(--line);border-radius:999px;background:var(--bg);color:var(--blue);font-weight:700}
+.chips button:hover{border-color:var(--blue)}
+#pts{font-size:1.4rem;font-weight:700;text-align:center}
 
 .msg{margin-top:18px;padding:18px;border-radius:12px;background:var(--surface);border:1px solid var(--line);text-align:center;color:var(--muted)}
 
@@ -180,9 +184,10 @@ function mock(action, d){
     MOCK.scores.forEach(s => { counts[s.item] = (counts[s.item]||0) + 1; total += s.points; });
     return { ok:true, total, counts };
   };
-  if(action === 'config') return { ok:true, title:MOCK.title, active:true, groups:MOCK.groups, items:MOCK.items.map(({code, ...i}) => i) };
+  if(action === 'config') return { ok:true, title:MOCK.title, active:true, maxPoints:1000, groups:MOCK.groups, items:MOCK.items.map(({code, ...i}) => i) };
   if(action === 'me') return mine();
   if(action === 'submit'){
+    if(!d.item){ MOCK.scores.push({ item:'自填', points:d.points }); MOCK.board[d.group] = (MOCK.board[d.group]||0) + d.points; return { ...mine(), added:d.points }; }
     const it = MOCK.items.find(i => i.id === d.item);
     const m = mine();
     if(it.once && m.counts[it.id]) return { ok:false, error:'這個項目已經登過分了' };
@@ -256,19 +261,51 @@ async function home(){
       <div class="score"><div class="n" id="total">–</div><div class="u">我的積分</div></div>
     </section>
     <section class="card">
-      <h2>登分項目</h2>
+      <h2>我要加分</h2>
+      <p class="sub">預設 100 分，可以直接送出，或改成其他分數。單次最多 ${CFG.maxPoints || 1000} 分。</p>
+      <label for="pts">分數</label>
+      <input id="pts" type="number" inputmode="numeric" min="1" max="${CFG.maxPoints || 1000}" step="1" value="100" placeholder="例如：100">
+      <div class="chips" role="group" aria-label="快速帶入分數">
+        ${[100,200,500,1000].filter(n => n <= (CFG.maxPoints || 1000)).map(n => `<button type="button" data-pts="${n}">+${n}</button>`).join('')}
+      </div>
+      <label for="note">加分原因（選填）</label>
+      <input id="note" maxlength="30" placeholder="例如：搶答、發表、完成任務">
+      <button class="primary" id="addBtn" type="button" ${CFG.active ? '' : 'disabled'}>送出加分</button>
+    </section>
+    ${CFG.items.length ? `<section class="card">
+      <h2>任務加分</h2>
       <p class="sub">完成任務後按「登分」。需要任務碼的項目，請輸入講師公布的代碼。</p>
       <ul class="items" id="items"></ul>
-    </section>`);
+    </section>` : ''}`);
+  const pts = document.getElementById('pts');
+  document.querySelectorAll('[data-pts]').forEach(b => b.addEventListener('click', () => { pts.value = b.dataset.pts; pts.focus(); }));
+  document.getElementById('addBtn').addEventListener('click', sendSelf);
   document.getElementById('edit').addEventListener('click', () => join(ME));
   const r = await api('me', { c:COURSE, d:deviceId() });
   renderItems(r.ok ? r : { total:0, counts:{} });
   if(!r.ok) toast(r.error, 'err');
 }
 
+async function sendSelf(){
+  const btn = document.getElementById('addBtn');
+  const ptsEl = document.getElementById('pts'), noteEl = document.getElementById('note');
+  const max = CFG.maxPoints || 1000;
+  const n = Math.round(Number(ptsEl.value));
+  if(!(n >= 1 && n <= max)){ toast(`分數請填 1 到 ${max} 之間的整數`, 'err'); ptsEl.focus(); return; }
+  btn.disabled = true; btn.textContent = '送出中…';
+  const r = await api('submit', { c:COURSE, d:deviceId(), name:ME.name, group:ME.group, points:n, note:noteEl.value.trim() });
+  btn.disabled = false; btn.textContent = '送出加分';
+  if(!r.ok){ toast(r.error, 'err'); return; }
+  ptsEl.value = '100'; noteEl.value = '';
+  renderItems(r);
+  const t = document.getElementById('total'); t.classList.remove('bump'); void t.offsetWidth; t.classList.add('bump');
+  toast(`+${r.added} 分，目前 ${r.total} 分`, 'ok');
+}
+
 function renderItems(state){
   document.getElementById('total').textContent = state.total;
   const ul = document.getElementById('items');
+  if(!ul) return;
   ul.innerHTML = CFG.items.map(it => {
     const n = state.counts[it.id] || 0;
     const done = it.once && n > 0;
