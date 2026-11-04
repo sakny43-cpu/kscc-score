@@ -74,6 +74,8 @@ input,select{width:100%;padding:12px 14px;border:1px solid var(--line);border-ra
 .chips button{flex:1 1 0;min-width:60px;padding:10px 0;border:1.5px solid var(--line);border-radius:999px;background:var(--bg);color:var(--blue);font-weight:700}
 .chips button:hover{border-color:var(--blue)}
 #pts{font-size:1.4rem;font-weight:700;text-align:center}
+.stepper{display:grid;grid-template-columns:72px 1fr 72px;gap:8px}
+.stepper button{border:1.5px solid var(--line);border-radius:10px;background:var(--bg);color:var(--blue);font-weight:700;font-size:1rem}
 
 .msg{margin-top:18px;padding:18px;border-radius:12px;background:var(--surface);border:1px solid var(--line);text-align:center;color:var(--muted)}
 
@@ -184,7 +186,7 @@ function mock(action, d){
     MOCK.scores.forEach(s => { counts[s.item] = (counts[s.item]||0) + 1; total += s.points; });
     return { ok:true, total, counts };
   };
-  if(action === 'config') return { ok:true, title:MOCK.title, active:true, maxPoints:1000, groups:MOCK.groups, items:MOCK.items.map(({code, ...i}) => i) };
+  if(action === 'config') return { ok:true, title:MOCK.title, active:true, minPoints:100, stepPoints:50, maxPoints:2000, groups:MOCK.groups, items:MOCK.items.map(({code, ...i}) => i) };
   if(action === 'me') return mine();
   if(action === 'submit'){
     if(!d.item){ MOCK.scores.push({ item:'自填', points:d.points }); MOCK.board[d.group] = (MOCK.board[d.group]||0) + d.points; return { ...mine(), added:d.points }; }
@@ -255,6 +257,7 @@ function join(prev){
 }
 
 async function home(){
+  const L = limits();
   shell(`
     <section class="card me">
       <div class="who">${esc(ME.group)}<b>${esc(ME.name)}</b><button class="link" id="edit" type="button">修改姓名或組別</button></div>
@@ -262,11 +265,15 @@ async function home(){
     </section>
     <section class="card">
       <h2>我要加分</h2>
-      <p class="sub">預設 100 分，可以直接送出，或改成其他分數。單次最多 ${CFG.maxPoints || 1000} 分。</p>
+      <p class="sub">最少 ${L.min} 分、以 ${L.step} 分為單位，單次最多 ${L.max} 分。</p>
       <label for="pts">分數</label>
-      <input id="pts" type="number" inputmode="numeric" min="1" max="${CFG.maxPoints || 1000}" step="1" value="100" placeholder="例如：100">
+      <div class="stepper">
+        <button type="button" id="minus" aria-label="減少 ${L.step} 分">−${L.step}</button>
+        <input id="pts" type="number" inputmode="numeric" min="${L.min}" max="${L.max}" step="${L.step}" value="${L.min}">
+        <button type="button" id="plus" aria-label="增加 ${L.step} 分">+${L.step}</button>
+      </div>
       <div class="chips" role="group" aria-label="快速帶入分數">
-        ${[100,200,500,1000].filter(n => n <= (CFG.maxPoints || 1000)).map(n => `<button type="button" data-pts="${n}">+${n}</button>`).join('')}
+        ${[100,500,1000,2000].filter(n => n >= L.min && n <= L.max && n % L.step === 0).map(n => `<button type="button" data-pts="${n}">${n}</button>`).join('')}
       </div>
       <label for="note">加分原因（選填）</label>
       <input id="note" maxlength="30" placeholder="例如：搶答、發表、完成任務">
@@ -278,7 +285,10 @@ async function home(){
       <ul class="items" id="items"></ul>
     </section>` : ''}`);
   const pts = document.getElementById('pts');
-  document.querySelectorAll('[data-pts]').forEach(b => b.addEventListener('click', () => { pts.value = b.dataset.pts; pts.focus(); }));
+  document.querySelectorAll('[data-pts]').forEach(b => b.addEventListener('click', () => { pts.value = b.dataset.pts; }));
+  const nudge = d => { const v = Math.round((Number(pts.value) || L.min) / L.step) * L.step + d; pts.value = Math.min(L.max, Math.max(L.min, v)); };
+  document.getElementById('minus').addEventListener('click', () => nudge(-L.step));
+  document.getElementById('plus').addEventListener('click', () => nudge(L.step));
   document.getElementById('addBtn').addEventListener('click', sendSelf);
   document.getElementById('edit').addEventListener('click', () => join(ME));
   const r = await api('me', { c:COURSE, d:deviceId() });
@@ -286,17 +296,19 @@ async function home(){
   if(!r.ok) toast(r.error, 'err');
 }
 
+function limits(){ return { min: CFG.minPoints || 100, step: CFG.stepPoints || 50, max: CFG.maxPoints || 2000 }; }
+
 async function sendSelf(){
   const btn = document.getElementById('addBtn');
   const ptsEl = document.getElementById('pts'), noteEl = document.getElementById('note');
-  const max = CFG.maxPoints || 1000;
-  const n = Math.round(Number(ptsEl.value));
-  if(!(n >= 1 && n <= max)){ toast(`分數請填 1 到 ${max} 之間的整數`, 'err'); ptsEl.focus(); return; }
+  const L = limits();
+  const n = Number(ptsEl.value);
+  if(!(n >= L.min && n <= L.max && n % L.step === 0)){ toast(`分數請填 ${L.min} 到 ${L.max}，並以 ${L.step} 分為單位`, 'err'); ptsEl.focus(); return; }
   btn.disabled = true; btn.textContent = '送出中…';
   const r = await api('submit', { c:COURSE, d:deviceId(), name:ME.name, group:ME.group, points:n, note:noteEl.value.trim() });
   btn.disabled = false; btn.textContent = '送出加分';
   if(!r.ok){ toast(r.error, 'err'); return; }
-  ptsEl.value = '100'; noteEl.value = '';
+  ptsEl.value = L.min; noteEl.value = '';
   renderItems(r);
   const t = document.getElementById('total'); t.classList.remove('bump'); void t.offsetWidth; t.classList.add('bump');
   toast(`+${r.added} 分，目前 ${r.total} 分`, 'ok');
